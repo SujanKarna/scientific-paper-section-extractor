@@ -22,10 +22,11 @@ def run_preprocessing(file_path: str):
     sections = build_sections(pages)
     print(f"Built {len(sections)} sections")
 
-    print("\n=== Sample of Built Sections ===")
-    for p in sections[:]:
-        print(f"\nSection {p['section']}, Pages {p['page_start']}-{p['page_end']}:")
-        # print(p['text'])
+    # print("\n=== Sample of Built Sections ===")
+    # for p in sections[:]:
+    #     print(f"\nSection {p['section']}, Pages {p['page_start']}-{p['page_end']}:")
+    #     for para in p['paragraphs']:
+    #         print(f"- {para}")
 
 
     return sections

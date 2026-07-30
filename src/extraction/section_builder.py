@@ -2,63 +2,92 @@ from src.extraction.section_detector import is_section_header
 
 
 def build_sections(pages):
-    all_sections = []
-    last_section = None
+    # Step 1: Collect all headers with page + line index
+    header_positions = []
 
     for p in pages:
-        page = p["page"]
-        text = p["raw_text"]
-        headers = p["headers"]  # already filtered by is_section_header()
+        page_num = p["page"]
+        lines = p["raw_text"].split("\n")
 
-        # If page has headers → split into multiple sections
-        if headers:
-            lines = text.split("\n")
-            current_header = None
-            current_text = []
-
-            for line in lines:
-                stripped = line.strip()
-
-                if stripped in headers:
-                    # Save previous section
-                    if current_header is not None:
-                        all_sections.append({
-                            "section": current_header,
-                            "page_start": page,
-                            "page_end": page,
-                            "text": "\n".join(current_text)
-                        })
-                        current_text = []
-
-                    current_header = stripped
-
-                else:
-                    current_text.append(stripped)
-
-            # Save last section on this page
-            if current_header is not None:
-                all_sections.append({
-                    "section": current_header,
-                    "page_start": page,
-                    "page_end": page,
-                    "text": "\n".join(current_text)
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped in p["headers"]:
+                header_positions.append({
+                    "title": stripped,
+                    "page": page_num,
+                    "line": idx
                 })
-                last_section = current_header
 
+    # Sort headers globally
+    header_positions.sort(key=lambda h: (h["page"], h["line"]))
+
+    sections = []
+
+    # Step 2: Extract content between headers
+    for i, header in enumerate(header_positions):
+        start_page = header["page"]
+        start_line = header["line"]
+
+        # Determine end boundary
+        if i + 1 < len(header_positions):
+            next_header = header_positions[i + 1]
+            end_page = next_header["page"]
+            end_line = next_header["line"]
         else:
-            # No header → append to last section
-            if last_section is not None:
-                all_sections[-1]["text"] += "\n" + text
-                all_sections[-1]["page_end"] = page
+            # Last header → until end of document
+            end_page = pages[-1]["page"]
+            end_line = len(pages[-1]["raw_text"].split("\n"))
+
+        # Step 3: Collect content across pages
+        content_lines = []
+
+        for p in pages:
+            pnum = p["page"]
+            lines = p["raw_text"].split("\n")
+
+            if pnum < start_page or pnum > end_page:
+                continue
+
+            # Starting page
+            if pnum == start_page:
+                s_idx = start_line + 1
             else:
-                # First pages with no header
-                all_sections.append({
-                    "section": "Unknown",
-                    "page_start": page,
-                    "page_end": page,
-                    "text": text
-                })
-                last_section = "Unknown"
+                s_idx = 0
 
-    return all_sections
+            # Ending page
+            if pnum == end_page:
+                e_idx = end_line
+            else:
+                e_idx = len(lines)
 
+            content_lines.extend(lines[s_idx:e_idx])
+
+        # Step 4: Remove empty parent sections
+        has_real_text = any(line.strip() for line in content_lines)
+
+        if not has_real_text:
+            continue
+
+        # Step 5: Clean paragraphs
+        paragraphs = []
+        current = []
+
+        for line in content_lines:
+            if line.strip():
+                current.append(line.strip())
+            else:
+                if current:
+                    paragraphs.append(" ".join(current))
+                    current = []
+
+        if current:
+            paragraphs.append(" ".join(current))
+
+        sections.append({
+            "section": header["title"],
+            "page_start": start_page,
+            "page_end": end_page,
+            "paragraphs": paragraphs
+        })
+
+    return sections

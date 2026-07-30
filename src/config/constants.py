@@ -1,8 +1,8 @@
-import os
+from pathlib import Path
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = Path(__file__).resolve().parents[2]
 
 # Define the base directory for raw data
-DATA_DIR = os.path.join(BASE_DIR, 'data')
-RAW_DATA_DIR = os.path.join(DATA_DIR, 'raw')
+DATA_DIR = BASE_DIR/"data"
+RAW_DATA_DIR = DATA_DIR/"raw"
