@@ -1,168 +1,187 @@
-import gradio as gr
+# app.py
+import json
+import logging
 from pathlib import Path
+import gradio as gr
 
 from src.pipeline.file_loader import save_uploaded_file
 from src.pipeline.run_pipeline import run_pipeline
 
+LOG = logging.getLogger("paper_section_extractor")
+LOG.setLevel(logging.INFO)
+LOG.addHandler(logging.StreamHandler())
 
-# ---------------------------------------------------------------------------
-# Core extraction logic (pipeline calls unchanged)
-# ---------------------------------------------------------------------------
+OUTPUT_DIR = Path("outputs")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+CUSTOM_CSS = """
+#hero {text-align: center; padding: 12px 0 8px 0;}
+#hero h1 {margin-bottom: 4px; font-size: 1.8rem;}
+footer {visibility: hidden}
+"""
+
+# ---------------- Helpers ----------------
+
+def convert_pipeline_output(raw_sections):
+    """Convert your dict-based pipeline output into UI-friendly list."""
+    if isinstance(raw_sections, dict):
+        return [
+            {
+                "section": key,
+                "page_start": raw_sections[key]["pages"][0] if raw_sections[key]["pages"] else None,
+                "page_end": raw_sections[key]["pages"][-1] if raw_sections[key]["pages"] else None,
+                "paragraphs": [
+                    p.strip() for p in raw_sections[key]["content"].split("\n\n") if p.strip()
+                ]
+            }
+            for key in raw_sections
+        ]
+    return raw_sections
+
 
 def sections_to_markdown(sections):
-    """Combine all extracted sections into one downloadable markdown file."""
     lines = []
-    for sec in sections:
-        lines.append(f"## {sec['section']}  (Pages {sec['page_start']}–{sec['page_end']})\n")
-        lines.append("\n\n".join(sec["paragraphs"]))
+    for s in sections:
+        lines.append(f"## {s['section']}\n**Pages:** {s['page_start']}–{s['page_end']}\n")
+        lines.append("\n\n".join(s["paragraphs"]))
         lines.append("\n\n---\n")
     return "\n".join(lines)
 
 
-def prepare_download(sections):
-    content = sections_to_markdown(sections)
-    out_path = Path("extracted_sections.md")
-    out_path.write_text(content, encoding="utf-8")
+def save_markdown(sections):
+    out_path = OUTPUT_DIR / "extracted_sections.md"
+    out_path.write_text(sections_to_markdown(sections), encoding="utf-8")
     return str(out_path)
 
 
-def filter_sections(sections, query):
-    if not query:
-        return sections
-    query = query.lower().strip()
-    return [s for s in sections if query in s["section"].lower()]
+def save_json(sections):
+    out_path = OUTPUT_DIR / "extracted_sections.json"
+    out_path.write_text(json.dumps(sections, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(out_path)
 
 
-def on_extract(file, progress=gr.Progress()):
+# ---------------- Core extraction ----------------
+
+def on_extract(file, search_query, debug=False, progress=gr.Progress()):
     if file is None:
-        return (
-            [],
-            "⚠️ No file uploaded yet — drop a PDF above to get started.",
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False, value=None),
-        )
+        return [], "⚠️ Upload a PDF first.", "", None, None
 
-    progress(0.2, desc="Saving uploaded file...")
+    progress(0.1, desc="Saving file...")
     saved_path = save_uploaded_file(file)
 
-    progress(0.6, desc="Extracting sections...")
-    sections = run_pipeline(saved_path)
+    progress(0.4, desc="Running pipeline...")
+    raw_sections = run_pipeline(saved_path)
+
+    sections = convert_pipeline_output(raw_sections)
 
     if not sections:
-        return (
-            [],
-            "⚠️ No sections were detected in this PDF. Try a different file.",
-            gr.update(visible=False),
-            gr.update(visible=False),
-            gr.update(visible=False, value=None),
-        )
+        return [], "⚠️ No sections detected.", "", None, None
 
-    progress(1.0, desc="Done!")
-    total_pages = max((s["page_end"] for s in sections), default=0)
-    status_msg = f"✅ Extracted **{len(sections)}** sections across **{total_pages}** pages."
-    download_path = prepare_download(sections)
+    # Apply search filter
+    if search_query:
+        q = search_query.lower().strip()
+        sections = [
+            s for s in sections
+            if q in s["section"].lower() or any(q in p.lower() for p in s["paragraphs"])
+        ]
 
-    return (
-        sections,
-        status_msg,
-        gr.update(visible=True),
-        gr.update(visible=True),
-        gr.update(visible=True, value=download_path),
-    )
+    # Render HTML manually
+    html = ""
+    for s in sections:
+        title = f"{s['section']} · pages {s['page_start']}–{s['page_end']}"
+        content = "<br><br>".join(s["paragraphs"])
+        html += f"""
+        <details>
+            <summary style='font-size:16px; padding:6px 0;'>{title}</summary>
+            <div style='padding:8px 0;'>{content}</div>
+        </details>
+        <hr>
+        """
+    # Build compact HTML
+    html = "<div style='font-size:14px;'>"
+
+    for s in sections:
+        title = f"{s['section']} · pages {s['page_start']}–{s['page_end']}"
+        content = "<br><br>".join(s["paragraphs"])
+
+        html += f"""
+        <details style='margin-bottom:8px;'>
+            <summary style='cursor:pointer; font-size:15px; padding:4px 0;'>
+                📘 {title}
+            </summary>
+            <div style='padding:6px 0 0 12px; font-size:14px;'>
+                {content}
+            </div>
+        </details>
+        """
+
+    html += "</div>"
+    
+    progress(0.9, desc="Preparing downloads...")
+    md_path = save_markdown(sections)
+    json_path = save_json(sections)
+
+    status = f"✅ Extracted {len(sections)} sections."
+
+    debug_text = repr(raw_sections)[:4000] if debug else ""
+
+    return sections, status, html, md_path, json_path, debug_text
 
 
-# ---------------------------------------------------------------------------
-# UI
-# ---------------------------------------------------------------------------
-
-CUSTOM_CSS = """
-#hero {text-align: center; padding: 10px 0 6px 0;}
-#hero h1 {margin-bottom: 2px; font-size: 1.9rem;}
-#hero p {color: var(--body-text-color-subdued);}
-.section-title {font-weight: 600;}
-footer {visibility: hidden}
-"""
-
+# ---------------- UI ----------------
 
 def build_ui():
-    with gr.Blocks(
-        theme=gr.themes.Soft(primary_hue="indigo", secondary_hue="slate"),
-        title="Paper Section Extractor",
-        css=CUSTOM_CSS,
-    ) as demo:
-        sections_state = gr.State([])
+    with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo"), css=CUSTOM_CSS) as demo:
 
         with gr.Column(elem_id="hero"):
-            gr.Markdown(
-                "# 📄 Paper Section Extractor\n"
-                "Turn a research PDF into clean, navigable sections in seconds."
-            )
+            gr.Markdown("# 📄 Paper Section Extractor")
+            gr.Markdown("Extract clean sections + page ranges from scientific PDFs.")
 
-        with gr.Row(equal_height=False):
-            # ---------------- Left column: upload & controls ----------------
+        with gr.Row():
+            # ---------------- LEFT COLUMN ----------------
             with gr.Column(scale=1, min_width=320):
-                pdf_input = gr.File(
-                    label="Upload a research paper (PDF)",
-                    file_types=[".pdf"],
-                    file_count="single",
-                )
+                pdf_input = gr.File(label="Upload PDF", file_types=[".pdf"])
+                search_box = gr.Textbox(label="Search sections", placeholder="e.g. Introduction")
+                debug_toggle = gr.Checkbox(label="Debug mode", value=False)
 
-                with gr.Row():
-                    extract_btn = gr.Button("🚀 Extract Sections", variant="primary", scale=2)
-                    clear_btn = gr.ClearButton(value="Clear", scale=1)
-
+                extract_btn = gr.Button("🚀 Extract Sections", variant="primary")
                 status = gr.Markdown("Upload a PDF to begin.")
 
-                search_box = gr.Textbox(
-                    label="🔍 Search sections",
-                    placeholder="e.g. Introduction, Methodology...",
-                    visible=False,
-                )
+                # Download buttons stay here (left side)
+                md_download = gr.DownloadButton("⬇️ Download Markdown", visible=False)
+                json_download = gr.DownloadButton("⬇️ Download JSON", visible=False)
 
-                download_btn = gr.DownloadButton("⬇️ Download as Markdown", visible=False)
-
-                gr.Markdown(
-                    "---\n"
-                    "**Tips**\n"
-                    "- Works best on standard single/double-column academic PDFs\n"
-                    "- Numbered headers like `1.`, `1.1`, `3.1.2` are detected automatically\n"
-                )
-
-            # ---------------- Right column: results ----------------
+            # ---------------- RIGHT COLUMN ----------------
             with gr.Column(scale=2):
-                results_area = gr.Column(visible=False)
-                with results_area:
-                    gr.Markdown("### 🗂️ Extracted Sections", elem_classes=["section-title"])
+                gr.Markdown("### 🗂️ Extracted Sections")
 
-                    @gr.render(inputs=[sections_state, search_box])
-                    def render_sections(sections, query):
-                        filtered = filter_sections(sections, query)
-                        if not filtered:
-                            gr.Markdown("_No sections match your search._")
-                            return
-                        for sec in filtered:
-                            with gr.Accordion(
-                                f"📘 {sec['section']}  ·  pages {sec['page_start']}–{sec['page_end']}",
-                                open=False,
-                            ):
-                                gr.Markdown("\n\n".join(sec["paragraphs"]))
+                # Compact section list
+                sections_html = gr.HTML(
+                    """
+                    <div style='font-size:14px; line-height:1.4;'>
+                        <i>No sections yet.</i>
+                    </div>
+                    """
+                )
 
+                debug_output = gr.Textbox(label="Debug Output", visible=False)
+
+        # Wiring
         extract_btn.click(
             fn=on_extract,
-            inputs=pdf_input,
-            outputs=[sections_state, status, results_area, search_box, download_btn],
-        )
-
-        clear_btn.add([pdf_input, sections_state, status, search_box, download_btn])
-
-        gr.Markdown(
-            "<div style='text-align:center; color:gray; margin-top:28px;'>"
-            "Made with ❤️ for scientific document processing By Sujan Karna."
-            "</div>"
+            inputs=[pdf_input, search_box, debug_toggle],
+            outputs=[
+                gr.State(),      # sections (not used directly)
+                status,
+                sections_html,
+                md_download,
+                json_download,
+                debug_output
+            ],
         )
 
     return demo
+
 
 
 if __name__ == "__main__":
